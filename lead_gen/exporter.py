@@ -25,6 +25,7 @@ COLUMNS = [
     ("Domain",              "domain"),
     ("Industry",            "industry"),
     ("Contact",             "contact"),
+    ("Contact Status",      "contact_status"),
     ("Poster Name",         "poster_name"),
     ("Poster Profile",      "poster_profile_url"),
     ("Location",            "location"),
@@ -42,9 +43,10 @@ DEFAULT_COLOR = "4A4A4A"
 
 
 def export_to_excel(leads: List[JobLead], output_dir: Path = None) -> Path:
-    # Tag MBA relevance before export
+    # Tag MBA relevance and contact status before export
     for lead in leads:
         lead.mba_relevant = "Yes" if is_mba_relevant(lead.role) else "No"
+        lead.contact_status = "Found" if lead.contact.strip() else "Need to Find"
 
     # Sort: MBA-relevant first, then by platform
     leads.sort(key=lambda l: (0 if l.mba_relevant == "Yes" else 1, l.platform))
@@ -118,6 +120,19 @@ def _style_sheet(ws, leads: List[JobLead]):
             mba_cell.fill = PatternFill("solid", fgColor="FFC7CE")
         mba_cell.alignment = Alignment(horizontal="center", vertical="center")
 
+        # Contact Status badge (column 8 — "Contact Status")
+        contact_status_col = next(
+            i for i, (lbl, _) in enumerate(COLUMNS, 1) if lbl == "Contact Status"
+        )
+        cs_cell = ws.cell(row=row_idx, column=contact_status_col)
+        if lead.contact_status == "Found":
+            cs_cell.font = Font(bold=True, color="276221")
+            cs_cell.fill = PatternFill("solid", fgColor="C6EFCE")
+        else:
+            cs_cell.font = Font(bold=True, color="974706")
+            cs_cell.fill = PatternFill("solid", fgColor="FFEB9C")
+        cs_cell.alignment = Alignment(horizontal="center", vertical="center")
+
         # Colour the Platform cell
         platform_cell = ws.cell(row=row_idx, column=platform_col_idx)
         color = PLATFORM_COLORS.get(lead.platform, DEFAULT_COLOR)
@@ -134,6 +149,7 @@ def _style_sheet(ws, leads: List[JobLead]):
         "Domain": 22,
         "Industry": 22,
         "Contact": 28,
+        "Contact Status": 18,
         "Poster Name": 22,
         "Poster Profile": 35,
         "Location": 20,

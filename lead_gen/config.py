@@ -33,10 +33,11 @@ NAUKRI_JOBS_URL = "https://www.naukri.com/jobs-in-india?jobAge=1&sortType=1&jobT
 # ── Instahyre ────────────────────────────────────────────────────────────────
 INSTAHYRE_JOBS_URL = "https://www.instahyre.com/search-jobs/?sort=date&job_type=full_time"
 
-# Max scroll rounds per platform
-MAX_SCROLLS_LINKEDIN  = 30
-MAX_SCROLLS_NAUKRI    = 20
-MAX_SCROLLS_INSTAHYRE = 20
+# Safety timeout per platform (minutes) — scraper stops after this even if
+# no end-of-results signal received. Set high so nothing gets missed.
+MAX_SCRAPE_MINUTES_LINKEDIN  = 120
+MAX_SCRAPE_MINUTES_NAUKRI    = 60
+MAX_SCRAPE_MINUTES_INSTAHYRE = 60
 
 # Run headless (True = no visible browser window, False = visible)
 HEADLESS = False

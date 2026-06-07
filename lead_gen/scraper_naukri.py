@@ -3,7 +3,8 @@ from playwright.sync_api import Page
 
 from models import JobLead
 from utils import extract_contact, infer_domain, infer_industry, is_within_24h
-from config import NAUKRI_JOBS_URL, MAX_SCROLLS_NAUKRI, PAGE_LOAD_WAIT, SCROLL_PAUSE
+import time as _time
+from config import NAUKRI_JOBS_URL, MAX_SCRAPE_MINUTES_NAUKRI, PAGE_LOAD_WAIT, SCROLL_PAUSE
 
 
 def scrape_naukri(page: Page, log=print) -> List[JobLead]:
@@ -33,7 +34,11 @@ def scrape_naukri(page: Page, log=print) -> List[JobLead]:
 
 def _collect_job_urls(page: Page, log) -> List[str]:
     urls = []
-    for i in range(MAX_SCROLLS_NAUKRI):
+    deadline = _time.time() + MAX_SCRAPE_MINUTES_NAUKRI * 60
+    prev_count = -1
+    stall_rounds = 0
+
+    while _time.time() < deadline:
         page.evaluate("window.scrollBy(0, 1500)")
         page.wait_for_timeout(SCROLL_PAUSE)
 
@@ -59,8 +64,17 @@ def _collect_job_urls(page: Page, log) -> List[str]:
             page.wait_for_timeout(SCROLL_PAUSE)
 
         if page.query_selector('.no-jobs, [class*="no-result"], [class*="noResult"]'):
-            log(f"[Naukri] End of results at scroll {i+1}.")
+            log(f"[Naukri] End of results. ({len(urls)} URLs collected)")
             break
+
+        if len(urls) == prev_count:
+            stall_rounds += 1
+            if stall_rounds >= 3:
+                log(f"[Naukri] No new jobs after 3 scrolls. Stopping. ({len(urls)} URLs collected)")
+                break
+        else:
+            stall_rounds = 0
+        prev_count = len(urls)
 
     return urls
 
