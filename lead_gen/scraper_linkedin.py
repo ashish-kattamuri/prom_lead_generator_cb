@@ -1,9 +1,12 @@
+import re
 from typing import List, Optional
+from urllib.parse import urlparse, parse_qs
 from playwright.sync_api import Page
 
 from models import JobLead
 from utils import extract_contact, infer_domain, infer_industry, is_within_24h
-from config import LINKEDIN_JOBS_URL, MAX_SCROLLS_LINKEDIN, PAGE_LOAD_WAIT, SCROLL_PAUSE
+import time as _time
+from config import LINKEDIN_JOBS_URL, MAX_SCRAPE_MINUTES_LINKEDIN, PAGE_LOAD_WAIT, SCROLL_PAUSE
 
 
 def scrape_linkedin(page: Page, log=print) -> List[JobLead]:
@@ -31,36 +34,78 @@ def scrape_linkedin(page: Page, log=print) -> List[JobLead]:
     return leads
 
 
+def _normalise_linkedin_url(url: str) -> Optional[str]:
+    """
+    Convert any LinkedIn job URL variant to the canonical /jobs/view/{id}/ form.
+
+    Handles:
+      - https://www.linkedin.com/jobs/view/3767702526/          → unchanged
+      - https://www.linkedin.com/jobs/search/?currentJobId=XYZ  → /jobs/view/XYZ/
+      - Any URL with a numeric job ID in the path               → /jobs/view/{id}/
+    """
+    try:
+        parsed = urlparse(url)
+        # Already a clean /jobs/view/ URL
+        view_match = re.search(r'/jobs/view/(\d+)', parsed.path)
+        if view_match:
+            return f"https://www.linkedin.com/jobs/view/{view_match.group(1)}/"
+
+        # Search page with currentJobId param
+        qs = parse_qs(parsed.query)
+        job_id = qs.get("currentJobId", [None])[0]
+        if job_id and job_id.isdigit():
+            return f"https://www.linkedin.com/jobs/view/{job_id}/"
+    except Exception:
+        pass
+    return None
+
+
 def _collect_job_urls(page: Page, log) -> List[str]:
     urls = []
-    for i in range(MAX_SCROLLS_LINKEDIN):
+    deadline = _time.time() + MAX_SCRAPE_MINUTES_LINKEDIN * 60
+    prev_count = -1
+    stall_rounds = 0
+
+    while _time.time() < deadline:
         page.evaluate("window.scrollBy(0, 1200)")
         page.wait_for_timeout(SCROLL_PAUSE)
 
-        new_urls = page.evaluate("""
+        raw_urls = page.evaluate("""
             () => [...new Set(
-                Array.from(document.querySelectorAll('a[href*="/jobs/view/"]'))
-                    .map(a => a.href.split('?')[0])
+                Array.from(document.querySelectorAll(
+                    'a[href*="/jobs/view/"], a[href*="currentJobId"]'
+                )).map(a => a.href)
             )]
         """)
-        for u in new_urls:
-            if u not in urls:
-                urls.append(u)
+        for raw in raw_urls:
+            clean = _normalise_linkedin_url(raw)
+            if clean and clean not in urls:
+                urls.append(clean)
 
-        # Check if we've scrolled past 24h window
+        # Stop if we've scrolled past the 24h window
         time_texts = page.evaluate("""
             () => Array.from(document.querySelectorAll(
                 '.job-card-container__listed-status, time, [class*="posted"]'
             )).map(el => el.innerText.trim()).filter(t => t)
         """)
         if any(t and not is_within_24h(t) for t in time_texts):
-            log(f"[LinkedIn] Reached posts older than 24h at scroll {i+1}. Stopping.")
+            log(f"[LinkedIn] Reached posts older than 24h. Stopping. ({len(urls)} URLs collected)")
             break
 
-        # Check for end-of-results
+        # Stop if LinkedIn shows end-of-results
         if page.query_selector(".jobs-search-no-results, .artdeco-empty-state__title"):
-            log("[LinkedIn] End of results.")
+            log(f"[LinkedIn] End of results. ({len(urls)} URLs collected)")
             break
+
+        # Stop if page hasn't grown in 3 consecutive scrolls (truly no more content)
+        if len(urls) == prev_count:
+            stall_rounds += 1
+            if stall_rounds >= 3:
+                log(f"[LinkedIn] No new jobs after 3 scrolls. Stopping. ({len(urls)} URLs collected)")
+                break
+        else:
+            stall_rounds = 0
+        prev_count = len(urls)
 
     return urls
 

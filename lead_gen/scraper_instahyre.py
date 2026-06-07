@@ -3,7 +3,8 @@ from playwright.sync_api import Page
 
 from models import JobLead
 from utils import extract_contact, infer_domain, infer_industry, is_within_24h
-from config import INSTAHYRE_JOBS_URL, MAX_SCROLLS_INSTAHYRE, PAGE_LOAD_WAIT, SCROLL_PAUSE
+import time as _time
+from config import INSTAHYRE_JOBS_URL, MAX_SCRAPE_MINUTES_INSTAHYRE, PAGE_LOAD_WAIT, SCROLL_PAUSE
 
 
 def scrape_instahyre(page: Page, log=print) -> List[JobLead]:
@@ -33,9 +34,11 @@ def scrape_instahyre(page: Page, log=print) -> List[JobLead]:
 
 def _collect_job_urls(page: Page, log) -> List[str]:
     urls = []
-    stop = False
+    deadline = _time.time() + MAX_SCRAPE_MINUTES_INSTAHYRE * 60
+    prev_count = -1
+    stall_rounds = 0
 
-    for i in range(MAX_SCROLLS_INSTAHYRE):
+    while _time.time() < deadline:
         page.evaluate("window.scrollBy(0, 1500)")
         page.wait_for_timeout(SCROLL_PAUSE)
 
@@ -51,20 +54,27 @@ def _collect_job_urls(page: Page, log) -> List[str]:
             if u not in urls:
                 urls.append(u)
 
-        # Check if visible time labels indicate we've gone past 24h
         time_texts = page.evaluate("""
             () => Array.from(document.querySelectorAll(
                 '[class*="posted"], [class*="date"], time, [class*="age"]'
             )).map(el => el.innerText.trim()).filter(t => t)
         """)
         if any(t and not is_within_24h(t) for t in time_texts):
-            log(f"[Instahyre] Reached posts older than 24h at scroll {i+1}. Stopping.")
-            stop = True
+            log(f"[Instahyre] Reached posts older than 24h. Stopping. ({len(urls)} URLs collected)")
             break
 
         if page.query_selector('[class*="no-result"], [class*="empty-state"]'):
-            log("[Instahyre] End of results.")
+            log(f"[Instahyre] End of results. ({len(urls)} URLs collected)")
             break
+
+        if len(urls) == prev_count:
+            stall_rounds += 1
+            if stall_rounds >= 3:
+                log(f"[Instahyre] No new jobs after 3 scrolls. Stopping. ({len(urls)} URLs collected)")
+                break
+        else:
+            stall_rounds = 0
+        prev_count = len(urls)
 
     return urls
 
