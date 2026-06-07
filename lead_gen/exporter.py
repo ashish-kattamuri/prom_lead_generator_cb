@@ -39,12 +39,13 @@ PLATFORM_COLORS = {
 DEFAULT_COLOR = "4A4A4A"
 
 
-def export_to_excel(leads: List[JobLead]) -> Path:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def export_to_excel(leads: List[JobLead], output_dir: Path = None) -> Path:
+    out = output_dir or OUTPUT_DIR
+    out.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     filename = f"leads_{timestamp}.xlsx"
-    filepath = OUTPUT_DIR / filename
+    filepath = out / filename
 
     # Build DataFrame
     rows = []
