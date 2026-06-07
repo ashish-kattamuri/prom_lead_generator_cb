@@ -1,4 +1,6 @@
+import re
 from typing import List, Optional
+from urllib.parse import urlparse, parse_qs
 from playwright.sync_api import Page
 
 from models import JobLead
@@ -32,6 +34,32 @@ def scrape_linkedin(page: Page, log=print) -> List[JobLead]:
     return leads
 
 
+def _normalise_linkedin_url(url: str) -> Optional[str]:
+    """
+    Convert any LinkedIn job URL variant to the canonical /jobs/view/{id}/ form.
+
+    Handles:
+      - https://www.linkedin.com/jobs/view/3767702526/          → unchanged
+      - https://www.linkedin.com/jobs/search/?currentJobId=XYZ  → /jobs/view/XYZ/
+      - Any URL with a numeric job ID in the path               → /jobs/view/{id}/
+    """
+    try:
+        parsed = urlparse(url)
+        # Already a clean /jobs/view/ URL
+        view_match = re.search(r'/jobs/view/(\d+)', parsed.path)
+        if view_match:
+            return f"https://www.linkedin.com/jobs/view/{view_match.group(1)}/"
+
+        # Search page with currentJobId param
+        qs = parse_qs(parsed.query)
+        job_id = qs.get("currentJobId", [None])[0]
+        if job_id and job_id.isdigit():
+            return f"https://www.linkedin.com/jobs/view/{job_id}/"
+    except Exception:
+        pass
+    return None
+
+
 def _collect_job_urls(page: Page, log) -> List[str]:
     urls = []
     deadline = _time.time() + MAX_SCRAPE_MINUTES_LINKEDIN * 60
@@ -42,15 +70,17 @@ def _collect_job_urls(page: Page, log) -> List[str]:
         page.evaluate("window.scrollBy(0, 1200)")
         page.wait_for_timeout(SCROLL_PAUSE)
 
-        new_urls = page.evaluate("""
+        raw_urls = page.evaluate("""
             () => [...new Set(
-                Array.from(document.querySelectorAll('a[href*="/jobs/view/"]'))
-                    .map(a => a.href.split('?')[0])
+                Array.from(document.querySelectorAll(
+                    'a[href*="/jobs/view/"], a[href*="currentJobId"]'
+                )).map(a => a.href)
             )]
         """)
-        for u in new_urls:
-            if u not in urls:
-                urls.append(u)
+        for raw in raw_urls:
+            clean = _normalise_linkedin_url(raw)
+            if clean and clean not in urls:
+                urls.append(clean)
 
         # Stop if we've scrolled past the 24h window
         time_texts = page.evaluate("""
