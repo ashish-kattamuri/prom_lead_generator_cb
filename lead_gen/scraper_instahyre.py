@@ -1,122 +1,101 @@
-"""
-Instahyre scraper — pure HTTP requests + BeautifulSoup.
-Instahyre exposes job listings as JSON in a script tag / API endpoint.
-"""
-
-import requests
-import json
-from bs4 import BeautifulSoup
-from typing import List, Callable
-from datetime import datetime, timedelta, timezone
+from typing import List, Optional
+from playwright.sync_api import Page
 
 from models import JobLead
-from utils import extract_contact, infer_domain, infer_industry, random_delay
-from config import HTTP_HEADERS, MAX_PAGES_INSTAHYRE
+from utils import extract_contact, infer_domain, infer_industry, is_within_24h
+from config import INSTAHYRE_JOBS_URL, MAX_SCROLLS_INSTAHYRE, PAGE_LOAD_WAIT, SCROLL_PAUSE
 
 
-INSTAHYRE_API = "https://www.instahyre.com/api/v1/opportunity/?format=json&ordering=-created&page={page}"
+def scrape_instahyre(page: Page, log=print) -> List[JobLead]:
+    log("[Instahyre] Navigating to Instahyre (sorted by date)...")
+    page.goto(INSTAHYRE_JOBS_URL, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_timeout(PAGE_LOAD_WAIT)
 
+    job_urls = _collect_job_urls(page, log)
+    log(f"[Instahyre] Found {len(job_urls)} job postings.")
 
-def scrape_instahyre(log: Callable = print) -> List[JobLead]:
-    leads: List[JobLead] = []
-    session = requests.Session()
-    session.headers.update(HTTP_HEADERS)
-    # Instahyre needs an Accept: application/json header for the API endpoint
-    session.headers["Accept"] = "application/json"
-
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-
-    for page in range(1, MAX_PAGES_INSTAHYRE + 1):
-        url = INSTAHYRE_API.format(page=page)
-        log(f"[Instahyre] Fetching page {page}...")
-
+    leads = []
+    for idx, url in enumerate(job_urls, 1):
         try:
-            resp = session.get(url, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            log(f"[Instahyre] Failed on page {page}: {e}")
-            break
-
-        results = data.get("results", [])
-        if not results:
-            log(f"[Instahyre] No results on page {page}. Stopping.")
-            break
-
-        page_leads = 0
-        stop = False
-        for item in results:
-            lead = _parse_instahyre_item(item, cutoff)
-            if lead is None:
-                # None means older than 24h — stop paginating
-                stop = True
-                break
+            lead = _extract_job(url, page, log)
             if lead:
                 leads.append(lead)
-                page_leads += 1
+                log(f"[Instahyre] ({idx}/{len(job_urls)}) {lead.company} — {lead.role}")
+            else:
+                log(f"[Instahyre] ({idx}/{len(job_urls)}) Skipped (>24h or incomplete).")
+        except Exception as e:
+            log(f"[Instahyre] ({idx}/{len(job_urls)}) Error: {e}")
+        page.wait_for_timeout(2000)
 
-        log(f"[Instahyre] Page {page}: {page_leads} leads added, {len(leads)} total.")
-
-        if stop:
-            log("[Instahyre] Reached posts older than 24h. Stopping.")
-            break
-
-        random_delay(1.5, 2.5)
-
-    log(f"[Instahyre] Done. {len(leads)} leads collected.")
+    log(f"[Instahyre] Done. {len(leads)} leads.")
     return leads
 
 
-def _parse_instahyre_item(item: dict, cutoff: datetime) -> JobLead | None | bool:
-    """
-    Returns:
-      JobLead  — valid lead within 24h
-      False    — item within 24h but incomplete (skip, continue)
-      None     — item older than 24h (stop pagination)
-    """
-    try:
-        created_str = item.get("created", "")
-        if created_str:
-            created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
-            if created < cutoff:
-                return None  # signal to stop
+def _collect_job_urls(page: Page, log) -> List[str]:
+    urls = []
+    stop = False
 
-        company_data = item.get("employer", {}) or item.get("company", {})
-        company = (
-            company_data.get("name", "") or
-            item.get("company_name", "") or
-            item.get("employer_name", "")
-        ).strip()
+    for i in range(MAX_SCROLLS_INSTAHYRE):
+        page.evaluate("window.scrollBy(0, 1500)")
+        page.wait_for_timeout(SCROLL_PAUSE)
 
-        role = (item.get("designation", "") or item.get("title", "")).strip()
+        new_urls = page.evaluate("""
+            () => [...new Set(
+                Array.from(document.querySelectorAll(
+                    'a[href*="/job/"], a[href*="/jobs/"], ' +
+                    '.job-card a, .opportunity-card a, [class*="job-title"] a'
+                )).map(a => a.href).filter(h => h.includes('instahyre.com'))
+            )]
+        """)
+        for u in new_urls:
+            if u not in urls:
+                urls.append(u)
 
-        if not company or not role:
-            return False
+        # Check if visible time labels indicate we've gone past 24h
+        time_texts = page.evaluate("""
+            () => Array.from(document.querySelectorAll(
+                '[class*="posted"], [class*="date"], time, [class*="age"]'
+            )).map(el => el.innerText.trim()).filter(t => t)
+        """)
+        if any(t and not is_within_24h(t) for t in time_texts):
+            log(f"[Instahyre] Reached posts older than 24h at scroll {i+1}. Stopping.")
+            stop = True
+            break
 
-        location_list = item.get("locations", [])
-        location = ", ".join(
-            loc.get("name", loc) if isinstance(loc, dict) else str(loc)
-            for loc in location_list
-        )
+        if page.query_selector('[class*="no-result"], [class*="empty-state"]'):
+            log("[Instahyre] End of results.")
+            break
 
-        description = item.get("description", "") or item.get("job_description", "") or ""
-        contact = extract_contact(description)
+    return urls
 
-        job_id = item.get("id", "")
-        job_url = f"https://www.instahyre.com/jobs/{job_id}/" if job_id else "https://www.instahyre.com"
 
-        posted = created_str[:10] if created_str else ""
+def _extract_job(url: str, page: Page, log) -> Optional[JobLead]:
+    page.goto(url, wait_until="domcontentloaded", timeout=20000)
+    page.wait_for_timeout(PAGE_LOAD_WAIT)
 
-        return JobLead(
-            platform="Instahyre",
-            company=company,
-            role=role,
-            domain=infer_domain(role),
-            industry=infer_industry(company, description),
-            contact=contact,
-            job_url=job_url,
-            date_posted=posted,
-            location=location,
-        )
-    except Exception:
-        return False
+    def txt(selector: str) -> str:
+        el = page.query_selector(selector)
+        return el.inner_text().strip() if el else ""
+
+    role = txt("h1[class*='title'], h1[class*='designation']") or txt("h1")
+    company = txt("[class*='company-name'], [class*='companyName'], .company a")
+    location = txt("[class*='location'], [class*='city']")
+    posted = txt("[class*='posted'], [class*='date'], time")
+    description = txt("[class*='description'], [class*='job-detail'], .jd-content")
+
+    if not role or not company:
+        return None
+    if posted and not is_within_24h(posted):
+        return None
+
+    return JobLead(
+        platform="Instahyre",
+        company=company,
+        role=role,
+        domain=infer_domain(role),
+        industry=infer_industry(company, description),
+        contact=extract_contact(description),
+        job_url=url,
+        date_posted=posted,
+        location=location,
+    )

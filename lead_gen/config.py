@@ -1,45 +1,35 @@
-import os
 from pathlib import Path
 
 # Output directory on Desktop
 OUTPUT_DIR = Path.home() / "Desktop" / "lead_generation_runs"
 
+# Persistent browser session storage (keeps you logged in across runs)
+SESSION_DIR = Path.home() / ".lead_gen_session"
+
 # How far back to look (hours)
 LOOKBACK_HOURS = 24
 
-# Delays between LinkedIn page loads (seconds) — keep human-like
-LINKEDIN_PAGE_DELAY = (2, 4)   # random between 2 and 4 seconds
-LINKEDIN_SCROLL_DELAY = (1, 2)
+# Delays between page loads (seconds)
+PAGE_LOAD_WAIT = 4000       # ms — wait after navigation
+SCROLL_PAUSE = 2000         # ms — wait after each scroll
 
-# LinkedIn Jobs URL — sorted by most recent, date posted = past 24 hours
+# LinkedIn Jobs URL — past 24 hours, sorted most recent
 LINKEDIN_JOBS_URL = (
     "https://www.linkedin.com/jobs/search/"
-    "?f_TPR=r86400"   # r86400 = past 24 hours (86400 seconds)
-    "&sortBy=DD"       # DD = date posted descending (most recent)
+    "?f_TPR=r86400"
+    "&sortBy=DD"
 )
 
-# Naukri search URL — jobs posted in last 1 day, all India
-NAUKRI_JOBS_URL = (
-    "https://www.naukri.com/jobs-in-india"
-    "?experience=0"
-    "&jobAge=1"        # posted in last 1 day
-)
+# Naukri — last 1 day, sorted by date
+NAUKRI_JOBS_URL = "https://www.naukri.com/jobs-in-india?jobAge=1&sortType=1"
 
-# Instahyre search URL
+# Instahyre — sorted by date
 INSTAHYRE_JOBS_URL = "https://www.instahyre.com/search-jobs/?sort=date"
 
-# Request headers to mimic a real browser for HTTP scrapers
-HTTP_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
+# Max scroll rounds per platform (each round scrolls ~1 screen)
+MAX_SCROLLS_LINKEDIN = 20
+MAX_SCROLLS_NAUKRI = 15
+MAX_SCROLLS_INSTAHYRE = 15
 
-# Max pages to scrape per platform (safety cap)
-MAX_PAGES_LINKEDIN = 20
-MAX_PAGES_NAUKRI = 10
-MAX_PAGES_INSTAHYRE = 10
+# Run headless (True = no visible browser window, False = visible)
+HEADLESS = False
