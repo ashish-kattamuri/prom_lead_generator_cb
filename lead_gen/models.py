@@ -15,3 +15,4 @@ class JobLead:
     location: str = ""
     poster_name: str = ""
     poster_profile_url: str = ""
+    mba_relevant: str = ""   # "Yes" / "No" — auto-tagged
