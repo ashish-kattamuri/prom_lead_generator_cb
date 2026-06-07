@@ -1,126 +1,90 @@
-"""
-Instahyre scraper — uses Chrome MCP with the user's live browser session.
-Navigates to Instahyre job search sorted by date, extracts jobs from last 24h.
-"""
-
-from typing import List, Callable, Optional
+from typing import List, Optional
+from playwright.sync_api import Page
 
 from models import JobLead
-from utils import extract_contact, infer_domain, infer_industry, random_delay, is_within_24h
-from config import LINKEDIN_PAGE_DELAY, LINKEDIN_SCROLL_DELAY, MAX_PAGES_INSTAHYRE
+from utils import extract_contact, infer_domain, infer_industry, is_within_24h
+from config import INSTAHYRE_JOBS_URL, MAX_SCROLLS_INSTAHYRE, PAGE_LOAD_WAIT, SCROLL_PAUSE
 
 
-INSTAHYRE_URL = "https://www.instahyre.com/search-jobs/?sort=date"
+def scrape_instahyre(page: Page, log=print) -> List[JobLead]:
+    log("[Instahyre] Navigating to Instahyre (sorted by date)...")
+    page.goto(INSTAHYRE_JOBS_URL, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_timeout(PAGE_LOAD_WAIT)
 
+    job_urls = _collect_job_urls(page, log)
+    log(f"[Instahyre] Found {len(job_urls)} job postings.")
 
-def scrape_instahyre(mcp_navigate, mcp_javascript, log: Callable = print) -> List[JobLead]:
-    leads: List[JobLead] = []
-
-    log("[Instahyre] Navigating to Instahyre jobs (sorted by date)...")
-    mcp_navigate(url=INSTAHYRE_URL)
-    random_delay(3, 5)
-
-    job_urls = _collect_job_urls(mcp_javascript, log)
-    log(f"[Instahyre] Found {len(job_urls)} job postings to process.")
-
-    for idx, job_url in enumerate(job_urls, 1):
+    leads = []
+    for idx, url in enumerate(job_urls, 1):
         try:
-            lead = _extract_job_detail(job_url, mcp_navigate, mcp_javascript, log)
+            lead = _extract_job(url, page, log)
             if lead:
                 leads.append(lead)
-                log(f"[Instahyre] ({idx}/{len(job_urls)}) Scraped: {lead.company} — {lead.role}")
+                log(f"[Instahyre] ({idx}/{len(job_urls)}) {lead.company} — {lead.role}")
             else:
-                log(f"[Instahyre] ({idx}/{len(job_urls)}) Skipped (older than 24h or incomplete).")
+                log(f"[Instahyre] ({idx}/{len(job_urls)}) Skipped (>24h or incomplete).")
         except Exception as e:
-            log(f"[Instahyre] ({idx}/{len(job_urls)}) Failed for {job_url}: {e}")
-        random_delay(*LINKEDIN_PAGE_DELAY)
+            log(f"[Instahyre] ({idx}/{len(job_urls)}) Error: {e}")
+        page.wait_for_timeout(2000)
 
-    log(f"[Instahyre] Done. {len(leads)} leads collected.")
+    log(f"[Instahyre] Done. {len(leads)} leads.")
     return leads
 
 
-def _collect_job_urls(mcp_javascript, log) -> List[str]:
-    all_urls = []
-    stop_early = False
+def _collect_job_urls(page: Page, log) -> List[str]:
+    urls = []
+    stop = False
 
-    for scroll_round in range(MAX_PAGES_INSTAHYRE):
-        mcp_javascript(script="window.scrollBy(0, 1500);")
-        random_delay(*LINKEDIN_SCROLL_DELAY)
+    for i in range(MAX_SCROLLS_INSTAHYRE):
+        page.evaluate("window.scrollBy(0, 1500)")
+        page.wait_for_timeout(SCROLL_PAUSE)
 
-        result = mcp_javascript(script="""
-            const links = Array.from(document.querySelectorAll(
-                'a[href*="/job/"], a[href*="/jobs/"], ' +
-                '.job-card a, .opportunity-card a, [class*="job-title"] a'
-            ));
-            return [...new Set(
-                links.map(a => a.href).filter(h => h.includes('instahyre.com'))
-            )];
+        new_urls = page.evaluate("""
+            () => [...new Set(
+                Array.from(document.querySelectorAll(
+                    'a[href*="/job/"], a[href*="/jobs/"], ' +
+                    '.job-card a, .opportunity-card a, [class*="job-title"] a'
+                )).map(a => a.href).filter(h => h.includes('instahyre.com'))
+            )]
         """)
+        for u in new_urls:
+            if u not in urls:
+                urls.append(u)
 
-        # Check posted times to know if we've scrolled past 24h
-        time_labels = mcp_javascript(script="""
-            const els = Array.from(document.querySelectorAll(
+        # Check if visible time labels indicate we've gone past 24h
+        time_texts = page.evaluate("""
+            () => Array.from(document.querySelectorAll(
                 '[class*="posted"], [class*="date"], time, [class*="age"]'
-            ));
-            return els.map(el => el.innerText.trim()).filter(t => t.length > 0);
+            )).map(el => el.innerText.trim()).filter(t => t)
         """)
-
-        if isinstance(result, list):
-            for url in result:
-                if url not in all_urls:
-                    all_urls.append(url)
-
-        if isinstance(time_labels, list):
-            for label in time_labels:
-                if label and not is_within_24h(label):
-                    stop_early = True
-                    break
-
-        if stop_early:
-            log(f"[Instahyre] Reached posts older than 24h at scroll {scroll_round + 1}.")
+        if any(t and not is_within_24h(t) for t in time_texts):
+            log(f"[Instahyre] Reached posts older than 24h at scroll {i+1}. Stopping.")
+            stop = True
             break
 
-        end = mcp_javascript(script="""
-            const el = document.querySelector('[class*="no-result"], [class*="empty-state"]');
-            return el ? el.innerText : null;
-        """)
-        if end:
+        if page.query_selector('[class*="no-result"], [class*="empty-state"]'):
             log("[Instahyre] End of results.")
             break
 
-    return list(dict.fromkeys(all_urls))
+    return urls
 
 
-def _extract_job_detail(job_url: str, mcp_navigate, mcp_javascript, log) -> Optional[JobLead]:
-    mcp_navigate(url=job_url)
-    random_delay(*LINKEDIN_PAGE_DELAY)
+def _extract_job(url: str, page: Page, log) -> Optional[JobLead]:
+    page.goto(url, wait_until="domcontentloaded", timeout=20000)
+    page.wait_for_timeout(PAGE_LOAD_WAIT)
 
-    data = mcp_javascript(script="""
-        function getText(sel) {
-            const el = document.querySelector(sel);
-            return el ? el.innerText.trim() : '';
-        }
+    def txt(selector: str) -> str:
+        el = page.query_selector(selector)
+        return el.inner_text().strip() if el else ""
 
-        const role = getText('h1[class*="title"], h1[class*="designation"], h1') || '';
-        const company = getText('[class*="company-name"], [class*="companyName"], .company a') || '';
-        const location = getText('[class*="location"], [class*="city"]') || '';
-        const posted = getText('[class*="posted"], [class*="date"], time') || '';
-        const description = getText('[class*="description"], [class*="job-detail"], .jd-content') || '';
+    role = txt("h1[class*='title'], h1[class*='designation']") or txt("h1")
+    company = txt("[class*='company-name'], [class*='companyName'], .company a")
+    location = txt("[class*='location'], [class*='city']")
+    posted = txt("[class*='posted'], [class*='date'], time")
+    description = txt("[class*='description'], [class*='job-detail'], .jd-content")
 
-        return { role, company, location, posted, description };
-    """)
-
-    if not isinstance(data, dict):
+    if not role or not company:
         return None
-
-    company = data.get('company', '').strip()
-    role = data.get('role', '').strip()
-    posted = data.get('posted', '').strip()
-    description = data.get('description', '').strip()
-
-    if not company or not role:
-        return None
-
     if posted and not is_within_24h(posted):
         return None
 
@@ -131,7 +95,7 @@ def _extract_job_detail(job_url: str, mcp_navigate, mcp_javascript, log) -> Opti
         domain=infer_domain(role),
         industry=infer_industry(company, description),
         contact=extract_contact(description),
-        job_url=job_url,
+        job_url=url,
         date_posted=posted,
-        location=data.get('location', ''),
+        location=location,
     )
