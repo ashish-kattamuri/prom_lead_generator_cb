@@ -38,8 +38,12 @@ def main():
             page.goto(url, wait_until="domcontentloaded", timeout=20000)
             page.wait_for_timeout(2000)
 
+            # Export cookies only (not localStorage) — stays well under GitHub's 64KB secret limit
             state = ctx.storage_state()
-            encoded = base64.b64encode(json.dumps(state).encode()).decode()
+            cookies_only = {"cookies": state.get("cookies", []), "origins": []}
+            encoded = base64.b64encode(json.dumps(cookies_only).encode()).decode()
+            size_kb = len(encoded) / 1024
+            print(f"  Size: {size_kb:.1f} KB")
 
             print(f"{'='*60}")
             print(f"GitHub Secret name : {secret_name}")
