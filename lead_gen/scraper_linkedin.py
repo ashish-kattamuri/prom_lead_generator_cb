@@ -8,7 +8,7 @@ It returns a list of JobLead objects.
 
 import time
 import random
-from typing import List, Callable
+from typing import List, Callable, Optional
 
 from models import JobLead
 from utils import extract_contact, infer_domain, infer_industry, is_within_24h, random_delay
@@ -107,7 +107,7 @@ def _collect_job_urls(mcp_javascript, mcp_get_page_text, log) -> List[str]:
 
 
 def _extract_job_detail(job_url: str, mcp_navigate, mcp_get_page_text,
-                        mcp_javascript, log) -> JobLead | None:
+                        mcp_javascript, log) -> "Optional[JobLead]":
     """Open an individual job posting and extract structured data."""
     mcp_navigate(url=job_url)
     random_delay(*LINKEDIN_PAGE_DELAY)
